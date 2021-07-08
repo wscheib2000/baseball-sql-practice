@@ -1,0 +1,50 @@
+---
+title: "Lahman DB SQL Exploration"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Connect db
+
+```{r, warning = FALSE}
+library(DBI)
+db <- dbConnect(RSQLite::SQLite(), dbname="./data/lahman2016.sqlite")
+```
+
+## SQL Query
+
+```{sql, connection=db, output.var = 'data'}
+SELECT *
+FROM
+  (
+    SELECT p.playerID AS player_id
+      , p.yearID AS year
+      , SUM(G) AS G
+      , SUM(GS) AS GS
+      , ROUND(CAST(SUM(GS) AS REAL) / SUM(G), 3) AS GS_prop
+      , SUM(IPouts) AS outs_recorded
+      , SUM(HR) AS HR
+      , SUM(BB + HBP) AS BB
+      , SUM(SO) AS K
+    FROM PITCHING p
+    GROUP BY p.playerID, p.yearID
+  ) AS tmp
+WHERE tmp.GS_prop > 0.75 AND tmp.year >= 1990 AND tmp.outs_recorded >= 200;
+```
+
+## Print head(data)
+
+```{r}
+head(data)
+```
+
+## Disconnect db
+
+```{r}
+dbDisconnect(db)
+```
