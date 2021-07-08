@@ -9,41 +9,244 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## Connect db
+## Methodology
+My goal with this project was to explore the viability of a three true outcomes system of evaluation for pitchers and hitters in the MLB. The three true outcomes are considered to be strikeouts, walks, and home runs. Those three results of an at bat are the only three in which only the pitcher and hitter (and, to some extent, catcher) are involved. These stats have the potential to be very effective at evaluating pitchers, hitters, and catchers because they eliminate the effect of defense. Defense-independent evaluation is important because the goal of evaluating players is to find out how impactful they are as individuals.
 
-```{r, warning = FALSE}
+I hope to create a one number three outcomes statistic which gives a seemingly accurate prediction of the best pitching, hitting, and catching seasons in the last few decades. Next, I hope to include contract information and find the most under- and over-valued players in the MLB in 2019.
+
+My data source was the Lahman database in sqlite form. The Lahman database is downloadable at http://www.seanlahman.com/baseball-archive/statistics/, which points the user to https://github.com/WebucatorTraining/lahman-baseball-mysql for the sqlite version.
+
+I realized that I would need to use some weights to put a numeric descriptor on the value of strikeouts, walks, and home runs, so I used the linear weights explored by Tango Tiger. More information can be found here: http://www.tangotiger.net/customlwts.html. Since 1990, the MLB average runs scored per team per game has had a mean value of 4.604 and a standard deviation of 0.284, so I chose to use the average of the values for 4 runs per game and 5 runs per game.
+
+## Setup
+
+```{r, warning = FALSE, message = FALSE}
 library(DBI)
+library(dplyr)
+library(ggplot2)
+
+# Set seed for reproducibility
+set.seed(12345)
+
+# Connect db
 db <- dbConnect(RSQLite::SQLite(), dbname="./data/lahman2016.sqlite")
 ```
 
 ## SQL Query
 
+First, I created a nested SELECT statement which allowed for some simpler calculations and filtering of the data so that I ended up with only pitchers in years 1990 and later who started over 75% of their games and had over 50 innings pitched. I had to make sure to combine instances where a player switched teams in the middle of the season and had his stats split up into two rows, so I used GROUP BY and a lot of SUM aggregate functions. Also, I decided to ignore sacrifice flies and bunts in the calculation for plate appearances, as they were not recorded before 2000 and thus created a lot of NULL values in the plate appearances column. I figured that they make up such a small percentage of plate appearances anyway that it would not make a significant difference.
+
+Second, I used a left join to join the previously selected data on the year column with another selection which grouped the data by year and found the average Weighted TTO for each season. This join gave me the additional necessary information to calculate another column called weighted_TTO_above_yearly_average with the weighted TTO value of a particular pitcher's season minus the average weighted TTO value for all pitchers in that same season. This standardization by season should help to make the data resilient to changes in the ball/mound which caused widespread differences in statistics accross the MLB.
+
 ```{sql, connection=db, output.var = 'data'}
-SELECT *
+SELECT tbl.player_id
+  , tbl.year
+  , tbl.weighted_TTO - yearly_avgs.yearly_avg AS weighted_TTO_above_yearly_avg
 FROM
   (
-    SELECT p.playerID AS player_id
-      , p.yearID AS year
-      , SUM(G) AS G
-      , SUM(GS) AS GS
-      , ROUND(CAST(SUM(GS) AS REAL) / SUM(G), 3) AS GS_prop
-      , SUM(IPouts) AS outs_recorded
-      , SUM(HR) AS HR
-      , SUM(BB + HBP) AS BB
-      , SUM(SO) AS K
-    FROM PITCHING p
-    GROUP BY p.playerID, p.yearID
-  ) AS tmp
-WHERE tmp.GS_prop > 0.75 AND tmp.year >= 1990 AND tmp.outs_recorded >= 200;
+    SELECT tmp.player_id
+      , tmp.year
+      , ROUND( 100 *
+            (
+              0.286*tmp.K +
+              -0.311*tmp.BB +
+              -0.3365*tmp.HBP +
+              -0.186*tmp.IBB +
+              -1.395*tmp.HR
+            ) / tmp.PA_against, 4) AS weighted_TTO
+    FROM
+      (
+        SELECT p.playerID AS player_id
+          , p.yearID AS year
+          , ROUND(CAST(SUM(p.GS) AS REAL) / SUM(p.G), 3) AS GS_prop
+          , SUM(p.IPouts)/3 AS innings_pitched
+          , SUM(p.IPouts) + SUM(p.BB) + SUM(p.HBP) + SUM(p.IBB) + SUM(p.H) AS PA_against
+          , SUM(BB) AS BB
+          , SUM(HBP) AS HBP
+          , SUM(IBB) AS IBB
+          , SUM(p.HR) AS HR
+          , SUM(p.SO) AS K
+        FROM PITCHING p
+        GROUP BY p.playerID, p.yearID
+      ) AS tmp
+    WHERE tmp.GS_prop > 0.75 AND tmp.year >= 1990 AND tmp.innings_pitched >= 50
+  ) AS tbl
+LEFT JOIN
+(
+  SELECT p.yearID AS year
+    , ROUND(
+      100 * (
+          0.286*SUM(p.SO) +
+          -0.311*SUM(p.BB) +
+          -0.3365*SUM(p.HBP) +
+          -0.186*SUM(p.IBB) +
+          -1.395*SUM(p.HR)
+        ) / (
+          SUM(p.IPouts) +
+          SUM(p.BB) +
+          SUM(p.HBP) +
+          SUM(p.IBB) +
+          SUM(p.H)
+        )
+      , 4
+    ) AS yearly_avg
+  FROM PITCHING p
+  GROUP BY p.yearID
+) AS yearly_avgs
+ON tbl.year = yearly_avgs.year
+ORDER BY tbl.weighted_TTO - yearly_avgs.yearly_avg DESC
+;
 ```
 
-## Print head(data)
+Query results (top and bottom 10 rows):
+
+```{r, echo = FALSE}
+head(data, 10)
+tail(data, 10)
+```
+
+## Normalization?
+
+I experimented with using Z-Score normalization and Min-Max normalization to normalize the data before realizing that it was probably pretty close to normal already. I created a histogram to be sure.
 
 ```{r}
-head(data)
+# Histogram theme settings
+plot_theme <- function() {
+  theme(
+    axis.title = element_blank(),
+    title = element_text(colour = 'blue', size = 20),
+    plot.margin = margin(1, 1, 1, 1, 'cm'),
+    axis.text = element_text(size = 12),
+    axis.ticks.x = element_blank(),
+    panel.grid = element_blank(),
+    panel.background = element_rect(fill = 'white', colour = 'black'),
+    plot.background = element_rect(fill = 'light grey')
+  )
+}
+
+# Calculate parameters
+mean = mean(data$weighted_TTO_above_yearly_avg)
+sd = sd(data$weighted_TTO_above_yearly_avg)
+binwidth = (max(data$weighted_TTO_above_yearly_avg) - min(data$weighted_TTO_above_yearly_avg)) / 20
+n = nrow(data)
+
+# Create histogram
+above_avg_hist <- 
+  ggplot(
+    data = data, 
+    aes(
+      x=weighted_TTO_above_yearly_avg,
+      mean = mean,
+      sd = sd,
+      binwidth = binwidth,
+      n = n
+    )
+  ) + 
+  geom_histogram(binwidth = binwidth, colour = 'red', fill = 'pink') +
+  stat_function(
+    fun = function(x) dnorm(x, mean, sd) * binwidth * n,
+    colour = 'black',
+    size = 1)
+
+above_avg_hist <- above_avg_hist +
+  labs(title = 'Weighted TTO Above Yearly Average') +
+  annotate(
+    geom = 'text',
+    label = list(
+      deparse(bquote(mu*":"~.(round(mean, 3)))),
+      deparse(bquote(sigma*":"~.(round(sd, 3))))
+    ),
+    parse = TRUE,
+    x = max(data$weighted_TTO_above_yearly_avg) - binwidth*2,
+    y = c(
+      max(ggplot_build(above_avg_hist)$data[[1]]$count)*.8, 
+      max(ggplot_build(above_avg_hist)$data[[1]]$count)*.7
+    ),
+    size = 5
+  ) +
+  plot_theme()
+
+above_avg_hist
 ```
 
-## Disconnect db
+As you can see, the distribution of Weighted TTO Above Yearly Average is almost exactly normal already, which, in addition to making my job easier, is also a good sign for the usefulness of the statistic. I did, however, realize that the mean was slightly different from zero, so I should adjust to account for that as well.
+
+```{r}
+data$wght_TTO_abv_avg_adj = data$weighted_TTO_above_yearly_avg - mean(data$weighted_TTO_above_yearly_avg)
+```
+
+data data.frame with wght_TTO_abv_avg_adj column (top and bottom 10 rows):
+
+```{r, echo = FALSE}
+head(data, 10)
+tail(data, 10)
+```
+
+I created the same histogram again to double check that the change did what I expected. The mean should now be zero and the standard deviation should be the same.
+
+```{r, echo = FALSE}
+# Histogram theme settings
+plot_theme <- function() {
+  theme(
+    axis.title = element_blank(),
+    title = element_text(colour = 'blue', size = 20),
+    plot.margin = margin(1, 1, 1, 1, 'cm'),
+    axis.text = element_text(size = 12),
+    axis.ticks.x = element_blank(),
+    panel.grid = element_blank(),
+    panel.background = element_rect(fill = 'white', colour = 'black'),
+    plot.background = element_rect(fill = 'light grey')
+  )
+}
+
+# Calculate parameters
+mean = mean(data$wght_TTO_abv_avg_adj)
+sd = sd(data$wght_TTO_abv_avg_adj)
+binwidth = (max(data$wght_TTO_abv_avg_adj) - min(data$wght_TTO_abv_avg_adj)) / 20
+n = nrow(data)
+
+# Create histogram
+above_avg_hist <- 
+  ggplot(
+    data = data, 
+    aes(
+      x=wght_TTO_abv_avg_adj,
+      mean = mean,
+      sd = sd,
+      binwidth = binwidth,
+      n = n
+    )
+  ) + 
+  geom_histogram(binwidth = binwidth, colour = 'red', fill = 'pink') +
+  stat_function(
+    fun = function(x) dnorm(x, mean, sd) * binwidth * n,
+    colour = 'black',
+    size = 1)
+
+above_avg_hist <- above_avg_hist +
+  labs(title = 'Weighted TTO Above Yearly Average') +
+  annotate(
+    geom = 'text',
+    label = list(
+      deparse(bquote(mu*":"~.(round(mean, 3)))),
+      deparse(bquote(sigma*":"~.(round(sd, 3))))
+    ),
+    parse = TRUE,
+    x = max(data$wght_TTO_abv_avg_adj) - binwidth*2,
+    y = c(
+      max(ggplot_build(above_avg_hist)$data[[1]]$count)*.8, 
+      max(ggplot_build(above_avg_hist)$data[[1]]$count)*.7
+    ),
+    size = 5
+  ) +
+  plot_theme()
+
+above_avg_hist
+```
+
+Now we can get to work.
+
+## Breakdown
 
 ```{r}
 dbDisconnect(db)
