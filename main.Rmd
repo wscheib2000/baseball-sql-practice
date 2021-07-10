@@ -29,7 +29,7 @@ library(ggplot2)
 set.seed(12345)
 
 # Connect db
-db <- dbConnect(RSQLite::SQLite(), dbname="./data/lahman2016.sqlite")
+db <- dbConnect(RSQLite::SQLite(), dbname="./data/lahman2019.sqlite")
 ```
 
 ## SQL Query
@@ -38,12 +38,17 @@ First, I created a nested SELECT statement which allowed for some simpler calcul
 
 Second, I used a left join to join the previously selected data on the year column with another selection which grouped the data by year and found the average Weighted TTO for each season. This join gave me the additional necessary information to calculate another column called weighted_TTO_above_yearly_average with the weighted TTO value of a particular pitcher's season minus the average weighted TTO value for all pitchers in that same season. This standardization by season should help to make the data resilient to changes in the ball/mound which caused widespread differences in statistics accross the MLB.
 
-```{sql, connection=db, output.var = 'data'}
+```{sql connection=db, output.var=data}
+/*
+  Selects player IDs, years, and weighted TTO above yearly average for starting pitching
+  seasons since 1990
+*/
 SELECT tbl.player_id
   , tbl.year
   , tbl.weighted_TTO - yearly_avgs.yearly_avg AS weighted_TTO_above_yearly_avg
 FROM
   (
+    /* Calculate weighted TTO */
     SELECT tmp.player_id
       , tmp.year
       , ROUND( 100 *
@@ -56,6 +61,12 @@ FROM
             ) / tmp.PA_against, 4) AS weighted_TTO
     FROM
       (
+        /*
+          Calculate plate appearances, innings pitched, and proportion of games started
+          Makes for simpler calculations and WHERE statement in outer scope
+          Uses GROUP BY with SUM to combine stat lines for players who spent time with more 
+          than one team in a season
+        */
         SELECT p.playerID AS player_id
           , p.yearID AS year
           , ROUND(CAST(SUM(p.GS) AS REAL) / SUM(p.G), 3) AS GS_prop
@@ -69,10 +80,16 @@ FROM
         FROM PITCHING p
         GROUP BY p.playerID, p.yearID
       ) AS tmp
-    WHERE tmp.GS_prop > 0.75 AND tmp.year >= 1990 AND tmp.innings_pitched >= 50
+    /*
+      Filter for pitcing seasons in which the pitcher started at least 75% of their games,
+      pitched in 1990 or later, and pitched at leasst 100 innings
+    */
+    WHERE tmp.GS_prop > 0.75 AND tmp.year >= 1990 AND tmp.innings_pitched >= 100
   ) AS tbl
+/* Joins with yearly averages */
 LEFT JOIN
 (
+  /* Compute yearly averages */
   SELECT p.yearID AS year
     , ROUND(
       100 * (
@@ -125,10 +142,10 @@ plot_theme <- function() {
 }
 
 # Calculate parameters
-mean = mean(data$weighted_TTO_above_yearly_avg)
-sd = sd(data$weighted_TTO_above_yearly_avg)
-binwidth = (max(data$weighted_TTO_above_yearly_avg) - min(data$weighted_TTO_above_yearly_avg)) / 20
-n = nrow(data)
+mean = data$weighted_TTO_above_yearly_avg %>% mean()
+sd = data$weighted_TTO_above_yearly_avg %>% sd()
+binwidth = data$weighted_TTO_above_yearly_avg %>% (function(val) (max(val) - min(val)) / 20)
+n = data %>% nrow()
 
 # Create histogram
 above_avg_hist <- 
@@ -185,28 +202,14 @@ tail(data, 10)
 I created the same histogram again to double check that the change did what I expected. The mean should now be zero and the standard deviation should be the same.
 
 ```{r, echo = FALSE}
-# Histogram theme settings
-plot_theme <- function() {
-  theme(
-    axis.title = element_blank(),
-    title = element_text(colour = 'blue', size = 20),
-    plot.margin = margin(1, 1, 1, 1, 'cm'),
-    axis.text = element_text(size = 12),
-    axis.ticks.x = element_blank(),
-    panel.grid = element_blank(),
-    panel.background = element_rect(fill = 'white', colour = 'black'),
-    plot.background = element_rect(fill = 'light grey')
-  )
-}
-
 # Calculate parameters
-mean = mean(data$wght_TTO_abv_avg_adj)
-sd = sd(data$wght_TTO_abv_avg_adj)
-binwidth = (max(data$wght_TTO_abv_avg_adj) - min(data$wght_TTO_abv_avg_adj)) / 20
-n = nrow(data)
+mean = data$weighted_TTO_above_yearly_avg %>% mean()
+sd = data$weighted_TTO_above_yearly_avg %>% sd()
+binwidth = data$weighted_TTO_above_yearly_avg %>% (function(val) (max(val) - min(val)) / 20)
+n = data %>% nrow()
 
 # Create histogram
-above_avg_hist <- 
+above_avg_adj_hist <- 
   ggplot(
     data = data, 
     aes(
@@ -224,7 +227,7 @@ above_avg_hist <-
     size = 1)
 
 above_avg_hist <- above_avg_hist +
-  labs(title = 'Weighted TTO Above Yearly Average') +
+  labs(title = 'Adjusted Weighted TTO Above Yearly Average') +
   annotate(
     geom = 'text',
     label = list(
@@ -241,7 +244,7 @@ above_avg_hist <- above_avg_hist +
   ) +
   plot_theme()
 
-above_avg_hist
+above_avg_adj_hist
 ```
 
 Now we can get to work.
