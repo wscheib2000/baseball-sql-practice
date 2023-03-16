@@ -5,7 +5,7 @@ output:
   pdf_document: default
 ---
 
-```{r setup, include=FALSE}
+```{r mkdn_setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
@@ -20,7 +20,7 @@ I realized that I would need to use some weights to put a numeric descriptor on 
 
 ## Setup
 
-```{r, warning = FALSE, message = FALSE}
+```{r setup, warning = FALSE, message = FALSE}
 library(DBI)
 library(dplyr)
 library(ggplot2)
@@ -38,7 +38,7 @@ First, I created a nested SELECT statement which allowed for some simpler calcul
 
 Second, I used a left join to join the previously selected data on the year column with another selection which grouped the data by year and found the average Weighted TTO for each season. This join gave me the additional necessary information to calculate another column called weighted_TTO_above_yearly_average with the weighted TTO value of a particular pitcher's season minus the average weighted TTO value for all pitchers in that same season. This standardization by season should help to make the data resilient to changes in the ball/mound which caused widespread differences in statistics accross the MLB.
 
-```{sql connection=db, output.var=data}
+```{sql sp_query, output.var="data", connection=db}
 /*
   Selects player IDs, years, and weighted TTO above yearly average for starting pitching
   seasons since 1990
@@ -126,7 +126,7 @@ tail(data, 10)
 
 I experimented with using Z-Score normalization and Min-Max normalization to normalize the data before realizing that it was probably pretty close to normal already. I created a histogram to be sure.
 
-```{r}
+```{r normal_check_hist}
 # Histogram theme settings
 plot_theme <- function() {
   theme(
@@ -201,7 +201,7 @@ tail(data, 10)
 
 I created the same histogram again to double check that the change did what I expected. The mean should now be zero and the standard deviation should be the same.
 
-```{r, echo = FALSE}
+```{r adj_check_hist, echo = FALSE}
 # Calculate parameters
 mean = data$weighted_TTO_above_yearly_avg %>% mean()
 sd = data$weighted_TTO_above_yearly_avg %>% sd()
@@ -249,8 +249,8 @@ above_avg_adj_hist
 
 Now we can get to work.
 
-## Breakdown
+## Cleanup
 
-```{r}
+```{r cleanup}
 dbDisconnect(db)
 ```
